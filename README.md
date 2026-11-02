@@ -155,3 +155,25 @@ You must understand every line you submit. We check this with your video and in 
 5. Paste the repository link and the video link in the application form.
 
 We will run `pnpm install && pnpm check && pnpm typecheck && pnpm test` on your repository.
+
+---
+
+## Decisions
+
+### 1. Integer cents for all money — never decimals
+
+All amounts are stored and computed as whole cents (`INTEGER` in SQLite). I never convert to dollars until display time. This eliminates floating-point rounding errors entirely. For example, `$10.01` is stored as `1001`, not `10.01`. The split remainder is distributed by pure integer arithmetic (`Math.floor` + modulo), so shares always add up to exactly `totalCents`.
+
+### 2. Idempotency via conditional UPDATE (`WHERE paid_at IS NULL`)
+
+To handle both duplicate requests and concurrent payments safely, the pay route does:
+
+```sql
+UPDATE shares SET paid_at = ?, idempotency_key = ? WHERE id = ? AND paid_at IS NULL
+```
+
+If `meta.changes === 0`, another request already paid this share. I then re-read the row: if the stored key matches the incoming key it is a duplicate → `200`; otherwise it is a conflict → `409`. This single atomic UPDATE acts as a concurrency lock without needing explicit transactions.
+
+### 3. Explicit `order_index` column on members
+
+The assignment requires shares to be distributed and balances listed in the order members were added. I store an explicit `order_index INTEGER` counter instead of relying on SQLite's implicit `rowid` ordering. Relying on rowid is fragile (it can change on `VACUUM`, is not portable, and is an implementation detail, not a contract). An explicit column makes the intent clear, is safely `ORDER BY`-able, and survives any future migration.
